@@ -30,6 +30,8 @@
 
 */
 
+
+debug = true;
 /////////////////////////////////
 /////////////////////////////////
 /////////////////////////////////
@@ -133,7 +135,8 @@ function createRobotProtocol (protocol) { // 'protocol' is the human-readable js
 
   for(var toolName in protocol.head) {
     _pipettes[toolName] = JSON.parse(JSON.stringify(protocol.head[toolName]));
-
+    _pipettes[toolName]['tip-rack-objs'] = {};  //doesn't exist in protocol.head[toolName]
+    _pipettes[toolName]['trash-container-objs'] = {};
     _pipettes[toolName]['current-plunger'] = 0;
 
     if(isNaN(_pipettes[toolName]['down-plunger-speed'])) _pipettes[toolName]['down-plunger-speed'] = 300;
@@ -145,56 +148,78 @@ function createRobotProtocol (protocol) { // 'protocol' is the human-readable js
 
     if(_pipettes[toolName].points) {
       // an array of objects, each object has a "f1" and an "f2" volume number
-      // take the old points, and sort them in accending order
-      _pipettes[toolName].points.sort(function (a,b) {
-        return a.f1-b.f1;
-      });
+      // take the old points, and sort them in ascending order
+      _pipettes[toolName].points.sort(
+        function (a,b) {return a.f1-b.f1;}
+      );
     }
     
-    var _trashcontainerName = _pipettes[toolName]['trash-container'].container.trim();
+    var _trashcontainerName = "";
 
+    if ( Array.isArray(_pipettes[toolName]['trash-container']) ){
+      _trashcontainerName = _pipettes[toolName]['trash-container'][0].trim();
+    }else{
+      _trashcontainerName = _pipettes[toolName]['trash-container'].container.trim();
+    }
     if(_trashcontainerName && _deck[_trashcontainerName]){
       var trashLabware = _deck[_trashcontainerName].labware;
       if(trashLabware) {
-        _pipettes[toolName]['trash-container'].locations = JSON.parse(labware_from_db[trashLabware]).locations;
+        _pipettes[toolName]['trash-container-objs'][_trashcontainerName] = {};
+        _pipettes[toolName]['trash-container-objs'][_trashcontainerName].locations = JSON.parse(labware_from_db[trashLabware]).locations;
       }
     }
     else {
       throw '"'+_trashcontainerName+'" not found in deck';
     }
 
-    var _tipracks = _pipettes[toolName]['tip-racks'];
+    var _tr_array = [];
+    _tr_array = _pipettes[toolName]['tip-racks'];
+    _tr_objs = {};
+    if(_tr_array.length>0) {
 
-    if(_tipracks) {
-
-      for(var _rack in _tipracks) {
-
-        var _rackParams = _tipracks[_rack];
-        _rackParams['clean-tips'] = [];
-        _rackParams['dirty-tips'] = [];
-
-        var containerName = _rackParams.container.trim();
+      for(var _rack in _tr_array) {
+        console.log('_rack: '+_rack);
+        console.log('_tr_array['+_rack+']: '+_tr_array[_rack]);
+        var containerName = "";
+        if (typeof _tr_array[_rack] === 'string'){
+          console.log('a string');
+          containerName = _tr_array[_rack].trim();
+        }else{
+          console.log('not a string');
+          containerName = _tr_array[_rack].container.trim();
+        }
+        console.log('containerName: '+containerName);
+        _tr_objs[containerName] = {};
+        _tr_objs[containerName]['container'] = containerName;
+        _tr_objs[containerName]['clean-tips'] = [];
+        _tr_objs[containerName]['dirty-tips'] = [];
+        
         var labwareName = _deck[containerName].labware.trim();
 
         if(labware_from_db[labwareName]) {
           // copy over all locations
           var _locations = JSON.parse(labware_from_db[labwareName]).locations;
           for(var locName in _locations) {
-            _rackParams['clean-tips'].push(_locations[locName]);
+            _tr_objs[containerName]['clean-tips'].push(_locations[locName]);
           }
         }
         else {
           throw '"'+labwareName+'" not found in labware definitions';
         }
       }
+      _pipettes[toolName]['tip-rack-objs'] = _tr_objs;
+      console.log('_pipettes['+toolName+'][tip-rack-objs]: '+_pipettes[toolName]['tip-rack-objs']);
+      console.log(_pipettes[toolName]['tip-rack-objs']);
 
       /////////
       /////////
       /////////
 
       _pipettes[toolName].pickupTip = function () {
-
-        var myRacks = this['tip-racks'];
+        console.log('_pipettes['+toolName+'].pickupTip called');
+        var myRacks = this['tip-rack-objs'];
+        console.log('myRacks: '+myRacks);
+        console.log(myRacks);
 
         this.justPickedUp = true;
 
@@ -202,18 +227,25 @@ function createRobotProtocol (protocol) { // 'protocol' is the human-readable js
         // and move it over the the 'dirty-tips' array
         var newTipLocation;
         var newTipContainerName;
-        for(var i=0;i<myRacks.length;i++) {
-          if(myRacks[i]['clean-tips'].length) {
+        for(var i=0;i<Object.keys(myRacks).length;i++) {
+          tr = Object.keys(myRacks)[i];
+          console.log('i:'+i);
+          console.log(tr);
+          if(myRacks[tr]['clean-tips'].length) {
             var howManyTips = this['multi-channel'] ? 8 : 1;
             if(isNaN(howManyTips)) howManyTips = 1;
-            newTipLocation = myRacks[i]['clean-tips'].splice(0,1)[0];
-            newTipContainerName = myRacks[i].container;
-            myRacks[i]['dirty-tips'].push(JSON.parse(JSON.stringify(newTipLocation)));
+            newTipLocation = myRacks[tr]['clean-tips'].splice(0,1)[0];
+            newTipContainerName = "";
+            newTipContainerName = myRacks[tr].container;
+            console.log('newTipContainerName: '+newTipContainerName);
+            myRacks[tr]['dirty-tips'].push(JSON.parse(JSON.stringify(newTipLocation)));
 
             // for when we're using a multi-channel, get rid of of the older tips
             for(var n=0;n<howManyTips-1;n++) {
-              var tempTip = myRacks[i]['clean-tips'].splice(0,1)[0];
-              myRacks[i]['dirty-tips'].push(JSON.parse(JSON.stringify(tempTip)));
+              var tempTip = myRacks[tr]['clean-tips'].splice(0,1)[0];
+              if(tempTip!=undefined){
+                myRacks[tr]['dirty-tips'].push(JSON.parse(JSON.stringify(tempTip)));
+              }
             }
             break;
           }
@@ -221,28 +253,29 @@ function createRobotProtocol (protocol) { // 'protocol' is the human-readable js
 
         // if we couldn't find a tip, copy over dirty tips to be clean ones
         // this assumes a human will be there to resupply new tips to the now 'dirty' locations
+        console.log('testing newTipLocation');
         if(!newTipLocation) {
-          for(var i=0;i<myRacks.length;i++) {
-            myRacks[i]['clean-tips'] = myRacks[i]['dirty-tips'];
-            myRacks[i]['dirty-tips'] = [];
+          for(var i in Object.keys(myRacks)) {
+            tr = Object.keys(myRacks)[i];
+            myRacks[tr]['clean-tips'] = myRacks[tr]['dirty-tips'];
+            myRacks[tr]['dirty-tips'] = [];
           }
 
-          newTipLocation = myRacks[0]['clean-tips'].splice(0,1)[0];
-          newTipContainerName = myRacks[0].container;
-          myRacks[0]['dirty-tips'].push(JSON.parse(JSON.stringify(newTipLocation)));
+          if(Object.keys(myRacks).length>0){
+            newTipLocation = myRacks[Object.keys(myRacks)[0]]['clean-tips'].splice(0,1)[0];
+            newTipContainerName = myRacks[Object.keys(myRacks)[0]].container;
+            myRacks[Object.keys(myRacks)[0]]['dirty-tips'].push(JSON.parse(JSON.stringify(newTipLocation)));
+          }
         }
 
         var moveArray = [];
 
         // now use the tip location, go over there, and grab the tip
 
-        moveArray.push({
-          'z' : 0
-        });
-
         this['current-plunger'] = 0; // reset the plunger's current state
 
         moveArray.push({
+          'z' : 0,
           'plunger' : 'resting'
         });
 
@@ -281,22 +314,29 @@ function createRobotProtocol (protocol) { // 'protocol' is the human-readable js
         var moveArray = [];
 
         // move to the trash location, and droptip
-        var trashContainerName = this['trash-container'].container;
-
+        var trashContainerName = "";
+        if( Array.isArray(this['trash-container']) ){
+          trashContainerName = this['trash-container'][0];
+        }else{
+          trashContainerName = this['trash-container'].container;
+        }
         var trashLocation;
-        for(var o in this['trash-container'].locations) {
-          trashLocation = this['trash-container'].locations[o];
+        for(var o in this['trash-container-objs'][trashContainerName].locations) {
+          trashLocation = this['trash-container-objs'][trashContainerName].locations[o];
           break;
         }
 
-        moveArray.push({
-          'z' : 0
-        });
-
         this['current-plunger'] = 0; // reset the plunger's current state
+
         moveArray.push({
+          'z' : 0,
           'plunger' : 'resting'
         });
+
+        //this['current-plunger'] = 0; // reset the plunger's current state
+        //moveArray.push({
+        //  'plunger' : 'resting'
+        //});
 
         moveArray.push({
           'x' : trashLocation.x,
@@ -305,6 +345,7 @@ function createRobotProtocol (protocol) { // 'protocol' is the human-readable js
         });
 
         moveArray.push({
+          'plunger' : 'blowout',
           'z' : trashLocation.z, // add one millimeter
           'container' : trashContainerName
         });
@@ -362,7 +403,8 @@ function createRobotProtocol (protocol) { // 'protocol' is the human-readable js
 
   // then add all the instructions from the loaded protocol file
   // parsing each command, and mapping to locations on the deck
-
+  console.log('instruction length: '+_instructions.length)
+  console.log(_instructions)
   for (var i=0;i<_instructions.length;i++) {
 
     var currentPipette = _pipettes[_instructions[i].tool];
@@ -378,15 +420,19 @@ function createRobotProtocol (protocol) { // 'protocol' is the human-readable js
         var newGroup;
 
         if(_group.transfer) {
+          console.log('making a transfer');
           newGroup = createPipetteGroup.transfer (_deck, currentPipette, _group.transfer);
         }
         else if(_group.distribute) {
+          console.log('making a distribute');
           newGroup = createPipetteGroup.distribute (_deck, currentPipette, _group.distribute);
         }
         else if(_group.consolidate) {
+          console.log('making a consolidate');
           newGroup = createPipetteGroup.consolidate (_deck, currentPipette, _group.consolidate);
         }
         else if(_group.mix) {
+          console.log('making a mix');
           newGroup = createPipetteGroup.mix (_deck, currentPipette, _group.mix);
         }
 
@@ -397,6 +443,8 @@ function createRobotProtocol (protocol) { // 'protocol' is the human-readable js
     }
 
     createdInstructions.push(newInstruction);
+    console.log('instructions:')
+    console.log(createdInstructions)
   }
 
   return createdInstructions;
@@ -414,7 +462,7 @@ var createPipetteGroup = {
   /////////
 
   'transfer' : function (theDeck, theTool, transferArray) {
-
+    console.log('transfer called');
     var createdGroup = {
       'command': 'pipette',
       'axis': theTool.axis,
@@ -429,6 +477,7 @@ var createPipetteGroup = {
     _addMovements(pickupArray);
 
     // create a series of move commands to accomplish the transfer described in params
+    latest_container = ''
     for(var i=0;i<transferArray.length;i++) {
 
       var thisTransferParams = transferArray[i];
@@ -441,10 +490,55 @@ var createPipetteGroup = {
 
       fromParams['extra-pull'] = thisTransferParams['extra-pull'];
 
-      var fromArray = makePipettingMotion(theDeck, theTool, fromParams, true);
-      _addMovements(fromArray);
+      var fromArray
+      var toArray
 
-      var toArray = makePipettingMotion(theDeck, theTool, toParams, false);
+      if('container' in fromParams && 'container' in toParams){
+        if (fromParams.container == toParams.container) {
+          if (latest_container == fromParams.container) {
+            fromArray = makePipettingMotion(theDeck, theTool, fromParams, true, true);
+            console.log('****************************************************');
+            console.log('fromArray(1): ');
+            console.log(fromArray);
+            console.log('****************************************************');
+          } else {
+            latest_container = fromParams.container
+            fromArray = makePipettingMotion(theDeck, theTool, fromParams, true, false);
+            console.log('****************************************************');
+            console.log('fromArray(2):');
+            console.log(fromArray);
+            console.log('****************************************************');
+          }
+          toArray = makePipettingMotion(theDeck, theTool, toParams, false, true);
+          console.log('****************************************************');
+          console.log('toArray(3):');
+          console.log(toArray);
+          console.log('****************************************************');
+        } else {
+          fromArray = makePipettingMotion(theDeck, theTool, fromParams, true, false);
+          console.log('****************************************************');
+          console.log('fromArray(4):');
+          console.log(fromArray);
+          console.log('****************************************************');
+          toArray = makePipettingMotion(theDeck, theTool, toParams, false, false);
+          console.log('****************************************************');
+          console.log('toArray(5):');
+          console.log(toArray);
+          console.log('****************************************************');
+        }
+      } else {
+        fromArray = makePipettingMotion(theDeck, theTool, fromParams, true, false);
+        console.log('****************************************************');
+        console.log('fromArray(6):');
+        console.log(fromArray);
+        console.log('****************************************************');
+        toArray = makePipettingMotion(theDeck, theTool, toParams, false, false);
+        console.log('****************************************************');
+        console.log('toArray(7):');
+        console.log(toArray);
+        console.log('****************************************************');
+      }
+      _addMovements(fromArray);
       _addMovements(toArray);
     }
 
@@ -487,24 +581,24 @@ var createPipetteGroup = {
 
     // always add a percentage onto distribute, to compensate for the curve when dispensing
     // defaults to 0%
-    console.log('totalVolume: '+totalVolume);
+    if(debug===true) console.log('totalVolume(1): '+totalVolume);
     totalVolume += (totalVolume * theTool['distribute-percentage']);
 
     if(totalVolume>theTool.volume) totalVolume = Number(theTool.volume);
 
-    console.log('totalVolume: '+totalVolume);
+    if(debug===true) console.log('totalVolume(2): '+totalVolume);
 
     var fromParams = JSON.parse(JSON.stringify(distributeGroup.from));
     fromParams.volume = totalVolume * -1; // negative because we're sucking up
 
     fromParams['extra-pull'] = distributeGroup['extra-pull'];
 
-    var tempFromArray = makePipettingMotion(theDeck, theTool, fromParams, true);
+    var tempFromArray = makePipettingMotion(theDeck, theTool, fromParams, true, false);
     _addMovements(tempFromArray); // adding the FROM well first
 
     // and then add the TO wells, this must happen after the FROM well, duh
     for(var b=0;b<toParamsArray.length;b++) {
-      var tempToArray = makePipettingMotion(theDeck, theTool, toParamsArray[b], false);
+      var tempToArray = makePipettingMotion(theDeck, theTool, toParamsArray[b], false, false);
       _addMovements(tempToArray);
     }
 
@@ -552,7 +646,7 @@ var createPipetteGroup = {
 
       fromParams['extra-pull'] = consolidateGroup['extra-pull'];
 
-      var tempFromArray = makePipettingMotion(theDeck, theTool, fromParams, i===0);
+      var tempFromArray = makePipettingMotion(theDeck, theTool, fromParams, i===0, false);
       _addMovements(tempFromArray);
     }
 
@@ -561,7 +655,7 @@ var createPipetteGroup = {
     var toParams = consolidateGroup.to;
     toParams.volume = totalVolume; // positive because we're blowing out
 
-    var tempToArray = makePipettingMotion(theDeck, theTool, toParams, false);
+    var tempToArray = makePipettingMotion(theDeck, theTool, toParams, false, false);
     _addMovements(tempToArray); // adding the TO well last
 
     var dropArray = theTool.dropTip(); // DROP THE CURRENT TIP AT THE END OF EACH GROUP
@@ -574,8 +668,8 @@ var createPipetteGroup = {
   /////////
   /////////
 
-  'mix' : function (theDeck, theTool, mixArray) {
-
+  'mix' : function (theDeck, theTool, mixArrayObjs) {
+    
     var createdGroup = {
       'command': 'pipette',
       'axis': theTool.axis,
@@ -590,10 +684,10 @@ var createPipetteGroup = {
     _addMovements(pickupArray);
 
     // create a series of move commands to accomplish the transfer described in params
-    for(var i=0;i<mixArray.length;i++) {
-      var thisParam = JSON.parse(JSON.stringify(mixArray[i]));
+    for(var i=0;i<mixArrayObjs.length;i++) {
+      var thisParam = JSON.parse(JSON.stringify(mixArrayObjs[i]));
       thisParam.volume *= -1; // this is so we accomodate for the moving liquid surface height
-      var mixMoveCommands = makePipettingMotion(theDeck, theTool, thisParam, true);
+      var mixMoveCommands = makePipettingMotion(theDeck, theTool, thisParam, true, false);
       _addMovements(mixMoveCommands);
     }
 
@@ -613,34 +707,41 @@ var createPipetteGroup = {
 /////////////////////////////////
 /////////////////////////////////
 
-function makePipettingMotion (theDeck, theTool, thisParams, shouldDropPlunger) {
+function makePipettingMotion (theDeck, theTool, thisParams, shouldDropPlunger, sameContainer) {
   var moveArray = [];
-
+  console.log('thisParams...');
+  console.log(thisParams);
   // create the rainbow to the FROM location
   var containerName = thisParams.container;
   if(theDeck[containerName] && theDeck[containerName].locations) {
-
+    console.log('the repetitions... '+thisParams.repetitions);
     var locationPos = theDeck[containerName].locations[thisParams.location];
 
     // don't update the volume yet if we're doing a MIX command (see below)
-    locationPos.updateVolume(Number(thisParams.volume));
+    if(typeof locationPos.updateVolume === 'function') locationPos.updateVolume(Number(thisParams.volume));
 
-    var specifiedOffset = thisParams['tip-offset'] || 0;
+    var specifiedOffset = 0;
 
-    var arriveDepth;
-
-    var bottomLimit = (locationPos.depth - 0.2) * -1; // give it 0.2 mm minimum distance from bottom of well
-
+    if (!isNaN(thisParams['tip-offset'])){
+      specifiedOffset = thisParams['tip-offset'];
+    }
+    console.log('specifiedOffset = '+specifiedOffset);
+    var arriveDepth = 0;
+    var bottomLimit = 0
+    if (!isNaN(locationPos.depth)){
+      bottomLimit = locationPos.depth * -1;//(locationPos.depth - 0.2) * -1; // give it 0.2 mm minimum distance from bottom of well
+    }
+    console.log('bottomLimit = '+bottomLimit);
     if(thisParams['liquid-tracking']===true) {
       arriveDepth = specifiedOffset-locationPos['current-liquid-offset'];
     }
     else {
       arriveDepth = bottomLimit + specifiedOffset;
     }
-
-    if(arriveDepth < bottomLimit) {
-      arriveDepth = bottomLimit;
-    }
+    console.log('arriveDepth = '+arriveDepth);
+    //if(arriveDepth < bottomLimit) {
+    //  arriveDepth = bottomLimit;
+    //}
 
     moveArray.push({
       'speed' : theTool['down-plunger-speed']
@@ -651,29 +752,40 @@ function makePipettingMotion (theDeck, theTool, thisParams, shouldDropPlunger) {
       rainbowHeight = 0;
       theTool.justPickedUp = false;
     }
-    moveArray.push({
-      'z' : rainbowHeight
-    });
 
-    // make sure the plunger is all the way up before going down
+
     if(shouldDropPlunger) {
       theTool['current-plunger'] = 0;
-      moveArray.push({
-        'plunger' : 'resting'
-      });
+      if(sameContainer==true) {
+        moveArray.push({
+          'plunger' : 'resting'
+        });
+      } else {
+        moveArray.push({
+          'plunger' : 'resting',
+          'z' : rainbowHeight
+        });
+      }
+    } else {
+      if(sameContainer==false){
+        moveArray.push({
+          'z' : rainbowHeight
+        });
+      }
     }
 
+    // make sure the plunger is all the way up before going down
     moveArray.push({
       'x' : locationPos.x,
       'y' : locationPos.y,
-      'container' : containerName,
+      'container' : containerName
     });
 
     // go one mm above the position
-    moveArray.push({
-      'z' : 1,
-      'container' : containerName,
-    });
+    //moveArray.push({
+    //  'z' : 1,
+    //  'container' : containerName
+    //});
 
     // then update the plunger's position to go ALMOST all the way down
     // this helps prevent the plunger getting stuck, but will also cause bubbles...
@@ -685,17 +797,25 @@ function makePipettingMotion (theDeck, theTool, thisParams, shouldDropPlunger) {
         });
         theTool['current-plunger'] = .95;
         moveArray.push({
-          'plunger' : theTool['current-plunger']
+          'plunger' : theTool['current-plunger'],
+          'z' : 1,
+          'container' : containerName
         });
       }
+    } else {
+      // go one mm above the position
+      moveArray.push({
+        'z' : 1,
+        'container' : containerName
+      });
     }
 
     // then go to the 'liquid-level + offset' position
     moveArray.push({
       'z' : arriveDepth,
-      'container' : containerName,
+      'container' : containerName
     });
-
+    
     // then update the plunger's position to go all the way down
     if(shouldDropPlunger) {
       theTool['current-plunger'] = 1;
@@ -705,11 +825,11 @@ function makePipettingMotion (theDeck, theTool, thisParams, shouldDropPlunger) {
     }
 
     // if delay is called, pause before sucking up
-    if(!isNaN(thisParams['delay'])) {
-      moveArray.push({
-        'delay' : thisParams['delay']
-      });
-    }
+    //if(!isNaN(thisParams['delay'])) {
+    //  moveArray.push({
+    //    'delay' : thisParams['delay']
+    //  });
+    //}
 
     var plungerPercentage = getPercentage(thisParams.volume, theTool);
     var extraPercentage = 0;
@@ -717,8 +837,7 @@ function makePipettingMotion (theDeck, theTool, thisParams, shouldDropPlunger) {
     // if it's a mix command, got through each repetition
     // then reset this well's volume to it's orginal level
     if(thisParams.repetitions) {
-
-      locationPos.updateVolume(Number(thisParams.volume * -1)); // undo the volume change we did above
+      if (typeof locationPos.updateVolume === 'function') locationPos.updateVolume(Number(thisParams.volume * -1)); // undo the volume change we did above
 
       // then loop through the repetitions, moving the plunger each step
       for(var i=0;i<thisParams.repetitions;i++) {
@@ -760,7 +879,7 @@ function makePipettingMotion (theDeck, theTool, thisParams, shouldDropPlunger) {
 
       if(extraPercentage!==0) {
 
-        var delaytime = 200; // default incase a delay wasn't initialized in the 'head'
+        var delaytime = 0.200; // default incase a delay wasn't initialized in the 'head'
         if(!isNaN(theTool['extra-pull-delay'])) delaytime = Math.abs(theTool['extra-pull-delay']);
 
         // let it pause before dispesning the 'extra-pull' liquid
@@ -793,7 +912,7 @@ function makePipettingMotion (theDeck, theTool, thisParams, shouldDropPlunger) {
     // go to the top of the well
     moveArray.push({
       'z' : 0,
-      'container' : containerName,
+      'container' : containerName
     });
 
     if(thisParams['blowout']) {
