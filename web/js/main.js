@@ -4,6 +4,9 @@
 
 var globalConnection;
 var robotStatus = false;
+var debug = true;
+var verbose = false;
+var str_last = "";
 
 window.addEventListener ('load', function () {
 
@@ -31,35 +34,60 @@ window.addEventListener ('load', function () {
   // When we open the connection, subscribe and register any protocols
   connection.onopen = function(session) {
     setStatus('Browser connected to server','rgb(27,225,100)');
-  
+    checkConnection();
     // Subscribe and register all function end points we offer from the 
     // javascript to the other clients (ie python)
 
     connection.session.subscribe('com.opentrons.robot_ready', function(status){
-      console.log('robotReady called');
-      console.log('robotStatus: '+robotStatus);
-      console.log('status: '+status);
-      if((robotStatus==false) && (status==true)){
-        console.log('going to send calibration request');
+      if(debug===true) {
+        console.log('robotReady called');
+        console.log('robotStatus: '+robotStatus);
+        console.log('status: '+status);
+        if((robotStatus==false) && (status==true)){
+          console.log('going to send calibration request');
+       }
       }
       var msg = {
-        'type' : 'calibrate',
-        'data' : ''
+        'type' : 'getContainers'
       };
-      console.log('msg stringified... '+JSON.stringify(msg));
+      if(debug===true) console.log('msg stringified... '+JSON.stringify(msg));
+      connection.session.publish('com.opentrons.browser_to_robot', [JSON.stringify(msg)]);
+      var msg = {
+        'type' : 'getCalibrations'
+      };
+      if(debug===true) console.log('msg stringified... '+JSON.stringify(msg));
       connection.session.publish('com.opentrons.browser_to_robot', [JSON.stringify(msg)]);
       robotStatus = status;
     });
 
+    if(debug===true) console.log('about to publish com.opentrons.browser_ready TRUE');
     connection.session.publish('com.opentrons.browser_ready', [true]);
 
     connection.session.subscribe('com.opentrons.robot_to_browser', function(str) {
       try{
+        if(debug===true){
+          if(verbose===true || str[0]!==str_last){
+            console.log('message on com.opentrons.robot_to_browser: '+str[0])
+          }
+        }
+        str_last = str[0];
         var msg = JSON.parse(str);
         if(msg.type && socketHandler[msg.type]) socketHandler[msg.type](msg.data);
         else console.log('error handling message (1): '+str);
+        
       } catch(error) {
         console.log('error handling message (2)');
+        console.log(error.message);
+      }
+    });
+
+    connection.session.subscribe('com.opentrons.robot_to_browser_ctrl', function(str) {
+      try{
+        var msg = JSON.parse(str);
+        if(msg.type && socketHandler[msg.type]) socketHandler[msg.type](msg.data);
+        else console.log('error handling message (3): '+str);
+      } catch(error) {
+        console.log('error handling message (4)');
         console.log(error);
       }
     });
@@ -72,7 +100,9 @@ window.addEventListener ('load', function () {
 /////////////////////////////////
 
 var theContainerLocations = {};
-var highestSpot = 0;
+var highestSpot = 5;
+var internetConnection = 'offline';
+var conn_timer = 0;
 
 function handleContainers (newContainers) {
 
@@ -93,15 +123,100 @@ function handleContainers (newContainers) {
   // why only a, what about b???
   for(var k = 0; k < kidOptions.length; k++) {
     var oldKidName = kidOptions[k].children[0].innerHTML;
-    if(!theContainerLocations.a[oldKidName]) {
+    if(!(theContainerLocations.a[oldKidName] || theContainerLocations.b[oldKidName])) {
       containerMenu.removeChild(kidOptions[k]);
       k--;
     }
   }
 
   highestSpot = 99999;
+  for(var nameA in theContainerLocations.a) {
 
-  for(var name in theContainerLocations.a) {
+    var foundIt = false;
+    for(var k = 0; k < kidOptions.length; k++) {
+      if(kidOptions[k].children[0].innerHTML===nameA) {
+        foundIt = true;
+        break;
+      }
+    }
+    if(!foundIt){
+      for(var nameB in theContainerLocations.b) {
+        for(var l = 0; l < kidOptions.length; l++) {
+          if(kidOptions[l].children[0].innerHTML===nameB) {
+            foundIt = true;
+            break;
+          }
+        }
+      }
+    }
+    if(!foundIt) {
+      var tempRow = document.createElement('tr');
+      var tempDatum = document.createElement('td');
+      var PA = document.createElement('td');
+      var PB = document.createElement('td');
+
+
+      var clickEvent = (function(){
+        var option = tempDatum;
+        return function(e) {
+          selectContainer(option);
+        }
+      })();
+
+      tempDatum.addEventListener('click',clickEvent);
+
+      var containerOption = document.createElement('option');
+      tempDatum.value = nameA;
+      tempDatum.innerHTML = nameA;
+
+
+      if(theContainerLocations.a[nameA].x!==null && theContainerLocations.a[nameA].y!==null && theContainerLocations.a[nameA].z!==null){
+        
+        PA.innerHTML = "<button type=\"button\" class=\"btn tron-blue\" onclick=\"saveContainer('a');\" disabled>Save</button> \
+        <button type=\"button\" class=\"btn tron-blue\" onclick=\"movetoContainer('a');\" disabled>Move To</button> \
+        <button type=\"button\" class=\"btn tron-red\" onclick=\"relativeCoords();\" style=\"display:none;\" disabled>Reset</button>";
+      
+      } else {
+        
+        PA.innerHTML = "<button type=\"button\" class=\"btn tron-blue\" onclick=\"saveContainer('a');\" disabled>Save</button> \
+        <button type=\"button\" class=\"btn tron-blue\" onclick=\"movetoContainer('a');\" style=\"display:none;\" disabled>Move To</button> \
+        <button type=\"button\" class=\"btn tron-red\" onclick=\"relativeCoords();\" style=\"display:none;\" disabled>Reset</button>";
+      }
+
+      if (nameA in theContainerLocations.b){
+        if(theContainerLocations.b[nameA].x!==null && theContainerLocations.b[nameA].y!==null && theContainerLocations.b[nameA].z!==null){
+
+          PB.innerHTML = "<button type=\"button\" class=\"btn tron-black\" onclick=\"saveContainer('b');\" disabled>Save</button> \
+          <button type=\"button\" class=\"btn tron-black\" onclick=\"movetoContainer('b');\" disabled>Move To</button> \
+          <button type=\"button\" class=\"btn tron-red\" onclick=\"relativeCoords();\" style=\"display:none;\" disabled>Reset</button>";
+
+        } else {
+          
+          PB.innerHTML = "<button type=\"button\" class=\"btn tron-black\" onclick=\"saveContainer('b');\" disabled>Save</button> \
+          <button type=\"button\" class=\"btn tron-black\" onclick=\"movetoContainer('b');\" style=\"display:none;\" disabled>Move To</button> \
+          <button type=\"button\" class=\"btn tron-red\" onclick=\"relativeCoords();\" style=\"display:none;\" disabled>Reset</button>";
+
+        }
+      }
+
+
+
+      
+      
+
+      tempRow.appendChild(tempDatum);
+      //switched append order to reflect center-left 
+      tempRow.appendChild(PB);
+      tempRow.appendChild(PA);
+
+      containerMenu.appendChild(tempRow);
+    }
+
+    if(theContainerLocations.a[nameA].z < highestSpot) highestSpot = theContainerLocations.a[nameA].z;
+    if(theContainerLocations.b[nameA].z < highestSpot) highestSpot = theContainerLocations.b[nameA].z;
+  }
+  for(var name in theContainerLocations.b) {
+
     var foundIt = false;
     for(var k = 0; k < kidOptions.length; k++) {
       if(kidOptions[k].children[0].innerHTML===name) {
@@ -112,6 +227,15 @@ function handleContainers (newContainers) {
     if(!foundIt) {
       var tempRow = document.createElement('tr');
       var tempDatum = document.createElement('td');
+      var PA = document.createElement('td');
+      var PB = document.createElement('td');
+
+      tempDatum.classList.add("col-md-4");
+      PA.classList.add("col-md-4");
+      PB.classList.add("col-md-4");
+      tempDatum.classList.add("col-sm-4");
+      PA.classList.add("col-sm-4");
+      PB.classList.add("col-sm-4");
 
       var clickEvent = (function(){
         var option = tempDatum;
@@ -125,33 +249,136 @@ function handleContainers (newContainers) {
       var containerOption = document.createElement('option');
       tempDatum.value = name;
       tempDatum.innerHTML = name;
+
+      if(theContainerLocations.b[name].x!==null && theContainerLocations.b[name].y!==null && theContainerLocations.b[name].z!==null){
+
+        PB.innerHTML = "<button type=\"button\" class=\"btn tron-black\" onclick=\"saveContainer('b');\" disabled>Save</button> \
+        <button type=\"button\" class=\"btn tron-black\" onclick=\"movetoContainer('b');\" disabled>Move To</button> \
+        <button type=\"button\" class=\"btn tron-red\" onclick=\"relativeCoords();\" style=\"display:none;\" disabled>Reset</button>";
+
+      } else {
+        
+        PB.innerHTML = "<button type=\"button\" class=\"btn tron-black\" onclick=\"saveContainer('b');\" disabled>Save</button> \
+        <button type=\"button\" class=\"btn tron-black\" onclick=\"movetoContainer('b');\" style=\"display:none;\" disabled>Move To</button> \
+        <button type=\"button\" class=\"btn tron-red\" onclick=\"relativeCoords();\" style=\"display:none;\" disabled>Reset</button>";
+
+      }
+
+      if (name in theContainerLocations.a){
+        if(theContainerLocations.a[name].x!==null && theContainerLocations.a[name].y!==null && theContainerLocations.a[name].z!==null){
+         
+          PA.innerHTML = "<button type=\"button\" class=\"btn tron-blue\" onclick=\"saveContainer('a');\" disabled>Save</button> \
+          <button type=\"button\" class=\"btn tron-blue\" onclick=\"movetoContainer('a');\" disabled>Move To</button> \
+          <button type=\"button\" class=\"btn tron-red\" onclick=\"relativeCoords();\" style=\"display:none;\" disabled>Reset</button>";
+        
+        } else {
+          
+          PA.innerHTML = "<button type=\"button\" class=\"btn tron-blue\" onclick=\"saveContainer('a');\" disabled>Save</button> \
+          <button type=\"button\" class=\"btn tron-blue\" onclick=\"movetoContainer('a');\" style=\"display:none;\" disabled>Move To</button> \
+          <button type=\"button\" class=\"btn tron-red\" onclick=\"relativeCoords();\" style=\"display:none;\" disabled>Reset</button>";
+        
+        }
+      }
+
       tempRow.appendChild(tempDatum);
+      //switched append order to reflect center-left 
+      tempRow.appendChild(PB);
+      tempRow.appendChild(PA);
       containerMenu.appendChild(tempRow);
     }
 
-    if(theContainerLocations.a[name].z < highestSpot) highestSpot = theContainerLocations.a[name].z;
+    if(theContainerLocations.b[name].z < highestSpot){
+      highestSpot = theContainerLocations.b[name].z;
+      if(debug===true){
+        console.log('highestSpot('+name+'-b.2):'+highestSpot);
+        console.log('theContainerLocations.b['+name+'] = '+theContainerLocations.b[name].z);
+      }
+    }
+
+    if(theContainerLocations.b[name].z < highestSpot) highestSpot = theContainerLocations.b[name].z;
   }
 
+
+  if(debug===true) console.log('highestSpot(1):'+highestSpot)
   if(highestSpot>200) {
-    highestSpot = 0;
+    highestSpot = 5;
+  }
+  if(debug===true) console.log('highestSpot(2):'+highestSpot)
+  if(highestSpot<5) {
+    highestSpot = 5;
+  }
+  // call function that cuts out the 'save' buttons for unused containers (defined in loadFiles.js)
+  if(CURRENT_PROTOCOL && CURRENT_PROTOCOL.head) {
+    setPipetteContainers(CURRENT_PROTOCOL, PIPETTES); // uses global variables CURRENT_PROTOCOL, PIPETTES
   }
 }
 
-////////////
-////////////
-////////////
+//////////////////////////////
+//////////////////////////////
+//////////////////////////////
 
 var currentSelectedContainer = undefined;
+var firstTD = undefined;
+var secondTD = undefined;
+var currentSelectedContainerItem = undefined;
 
 function selectContainer(currentDiv) {
 
   if(currentSelectedContainer) {
     currentSelectedContainer.classList.remove('tron-grey');
+    firstTD = currentSelectedContainer.nextSibling;
+    secondTD = firstTD.nextSibling;
+    
+    console.log(firstTD);
+    var saveBtnB = firstTD.firstChild;
+    var moveBtnB = firstTD.firstChild.nextElementSibling;
+    console.log(secondTD);
+    var saveBtnA = secondTD.firstChild;
+    var moveBtnA = secondTD.firstChild.nextElementSibling;
+    
+
+    moveBtnA.disabled = true;
+    moveBtnB.disabled = true;
+    saveBtnA.disabled = true;
+    saveBtnB.disabled = true;
+
+    var resetBtnB = moveBtnB.nextElementSibling;
+    var resetBtnA = moveBtnA.nextElementSibling;
+
+    resetBtnB.disabled = true;
+    resetBtnA.disabled = true;
   }
 
   if(currentDiv) {
     currentSelectedContainer = currentDiv;
     currentSelectedContainer.classList.add('tron-grey');
+    firstTD = currentSelectedContainer.nextSibling;
+    secondTD = firstTD.nextSibling;
+    
+    var saveBtnB = firstTD.firstChild;
+    var moveBtnB = firstTD.firstChild.nextElementSibling;
+    
+    var saveBtnA = secondTD.firstChild;
+    var moveBtnA = secondTD.firstChild.nextElementSibling;
+
+    moveBtnA.disabled = false;
+    moveBtnB.disabled = false;
+    saveBtnA.disabled = false;
+    saveBtnB.disabled = false;
+
+
+    console.log('currentDiv.value: ',currentDiv.value);
+    console.log("TIPRACKS['a']: ",TIPRACKS['a']);
+    console.log("TIPRACKS['b']: ",TIPRACKS['b']);
+    if(TIPRACKS['a'][0]==currentDiv.value){
+      var resetBtnA = moveBtnA.nextElementSibling;
+      resetBtnA.disabled = false;
+    }
+    if(TIPRACKS['b'][0]==currentDiv.value){
+      var resetBtnB = moveBtnB.nextElementSibling;
+      resetBtnB.disabled = false;
+    }
+    
 
     var axis = ['a','b'];
     var coords = ['x','y','z'];
@@ -160,8 +387,12 @@ function selectContainer(currentDiv) {
       for(var n=0;n<coords.length;n++) {
         var val = theContainerLocations[axis[i]][currentSelectedContainer.value][coords[n]];
 
+
         if(val!=null) val = val.toFixed(1);
         else val = 'none';
+
+
+
         document.getElementById('containerpos_'+coords[n]+'_'+axis[i]).innerHTML = val;
       }
     }
@@ -171,13 +402,38 @@ function selectContainer(currentDiv) {
   }
 }
 
-////////////
-////////////
-////////////
+/////////////////////////////////
+/////////////////////////////////
+/////////////////////////////////
 
 function saveContainer (axis) {
 
   var contName = currentSelectedContainer.value;
+
+  firstTD = currentSelectedContainer.nextElementSibling;
+  secondTD = firstTD.nextElementSibling;
+  
+  if(axis == 'a'){
+    
+    var moveBtn = secondTD.firstChild.nextElementSibling;
+    moveBtn.style.display = 'inline-block';
+    console.log('TIPRACKS[a][0]: '+TIPRACKS['a'][0]);
+    if(TIPRACKS['a'][0]==contName){
+      var resetBtn = moveBtn.nextElementSibling;
+      resetBtn.style.display = 'inline-block';
+    }
+  
+  } else {
+
+    var moveBtn = firstTD.firstChild.nextElementSibling;
+    moveBtn.style.display = 'inline-block';
+    console.log('TIPRACKS[b][0]: '+TIPRACKS['b'][0]);
+    if(TIPRACKS['b'][0]==contName){
+      var resetBtn = moveBtn.nextElementSibling;
+      resetBtn.style.display = 'inline-block';
+    }
+
+  }
 
   calibrateContainer(axis, contName);
 
@@ -186,16 +442,17 @@ function saveContainer (axis) {
   },500);
 }
 
-////////////
-////////////
-////////////
+/////////////////////////////////
+/////////////////////////////////
+/////////////////////////////////
 
 function movetoContainer (axis) {
+
   var contName = currentSelectedContainer.value;
   
   var thisLoc = theContainerLocations[axis][contName];
   
-  if(thisLoc.x && thisLoc.y && thisLoc.z) {
+  if(!isNaN(thisLoc.x) && !isNaN(thisLoc.y) && !isNaN(thisLoc.z)) {
 
     var moveArray = [];
 
@@ -227,6 +484,38 @@ var lineCount = 0;
 var lineLimit = 500; // If this number is too big bad things happen
 
 var socketHandler = {
+  'position' : (function(){
+    return function (data) {
+      console.log(data);
+      msg = data.string;
+      try {
+        var coordMessage = msg;
+        if(!isNaN(coordMessage.x)) {
+          document.getElementById('position_x').innerHTML = coordMessage.x.toFixed(1);
+          robotState.x = coordMessage.x;
+        }
+        if(!isNaN(coordMessage.y)) {
+          document.getElementById('position_y').innerHTML = coordMessage.y.toFixed(1);
+          robotState.y = coordMessage.y;
+        }
+        if(!isNaN(coordMessage.z)) {
+          document.getElementById('position_z').innerHTML = coordMessage.z.toFixed(1);
+          robotState.z = coordMessage.z;
+        }
+        if(!isNaN(coordMessage.a)) {
+          document.getElementById('position_a').innerHTML = coordMessage.a.toFixed(1);
+          robotState.a = coordMessage.a;
+        }
+        if(!isNaN(coordMessage.b)) {
+          document.getElementById('position_b').innerHTML = coordMessage.b.toFixed(1);
+          robotState.b = coordMessage.b;
+        }
+      }
+      catch(e) {
+        console.log(e);
+      }
+    }
+  })(),
   'smoothie' : (function(){
 
     var previousMessage = undefined;
@@ -235,9 +524,10 @@ var socketHandler = {
 
       if(data.string!==previousMessage) {
 
-        if(data.string.indexOf('{')>=0){
+        /*if(data.string.indexOf('{')>=0){
+          msg = data.string.slice(data.string.indexOf('{'));
           try {
-            var coordMessage = JSON.parse(data.string);
+            var coordMessage = JSON.parse(msg);
             if(!isNaN(coordMessage.x)) {
               document.getElementById('position_x').innerHTML = coordMessage.x.toFixed(1);
               robotState.x = coordMessage.x;
@@ -262,7 +552,7 @@ var socketHandler = {
           catch(e) {
             console.log(e);
           }
-        }
+        }*/
 
         previousMessage = data.string;
 
@@ -293,7 +583,8 @@ var socketHandler = {
   })(),
 
   'coordinates' : function (data) {
-    console.log(data);
+    if(debug===true) console.log(data);
+    //just for debugging?
   },
   'status' : function (data) {
     setStatus(data.string,data.color);
@@ -308,9 +599,28 @@ var socketHandler = {
 
       try{
         document.getElementById('pipetteVolume_'+axis).innerHTML = robotState.pipettes[axis].volume.toFixed(2);
+        document.getElementById('btn_top_'+axis).style.visibility = "visible"
+        document.getElementById('btn_blowout_'+axis).style.visibility = "visible"
+        document.getElementById('btn_droptip_'+axis).style.visibility = "visible"
       }
-      catch(e){}
+      catch(e){
+        console.log(e);
+      }
     }
+  },
+  'containers' : function (data) {
+    //var blob = data;//JSON.parse(data);
+    //var newContainers = blob.containers;
+    //console.log('newContainers...');
+    //console.log(newContainers);
+    containersList = data;
+    console.log('containersList');
+    console.log(containersList);
+    listContainers(containersList);
+    //if (newContainers) {
+    //  saveContainers(newContainers);
+    //}
+
   },
   'containerLocations' : function (data) {
     handleContainers(data);
@@ -348,6 +658,58 @@ var socketHandler = {
     } else {
       document.getElementById('wifi_essid_span').innerHTML = data;
     }
+  },
+  'internet' : function(data) {
+    conn_timer = 0;
+    internetConnection=data;
+  },
+  'per_data' : function(data) {
+    internetConnection=data.internet
+    if(data.wifi_essid==""){
+      document.getElementById('wifi_essid_span').innerHTML = '[none]';
+    }else{
+      document.getElementById('wifi_essid_span').innerHTML = data.wifi_essid;
+    }
+    if(data.wifi_ip==""){
+      document.getElementById('wifi_ip').innerHTML = '[none]';
+    }else{
+      document.getElementById('wifi_ip').innerHTML = data.wifi_ip;
+    }
+    if(data.eth_ip==""){
+      document.getElementById('eth_ip').innerHTML = '[none]';
+    }else{
+      document.getElementById('eth_ip').innerHTML = data.eth_ip;
+    }
+  },
+  'limit' : function(data) {
+    if(debug===true) console.log('limit... '+data.slice(0,4));
+    setStatus('Minimum limit switch hit for '+data.slice(-1).toUpperCase()+' axis! Please home the machine.','red');
+    var dt1 = new Date();
+    var utcDate = dt1.toUTCString();
+    if(data.slice(0,4)=="min_"){
+      var ax = data;
+      alert('Minimum limit switch hit for '+data.slice(-1).toUpperCase()+' axis!\n\nPlease home the machine.\n\n\n\n'+utcDate);
+    }
+  },
+  'progress' : function(data) {
+    //not currently being used
+    if(debug===true) console.log('making progress... '+data);
+  },
+  'success' : function(data) {
+    setStatus(data,'green');
+    alert(data);
+  },
+  'failure' : function(data) {
+    setStatus(data,'red');
+    alert(data);
+  },
+  'delay' : function(data) {
+    var msg = 'Delaying, seconds remaining: '+data;
+    setStatus(msg, 'orange');
+  },
+  'backend_version' : function(data) {
+    var msg = 'Backend: '+data;
+    setBackendVersion(msg, 'black');
   }
 };
 
@@ -358,7 +720,12 @@ var timeSentJob = undefined;
 /////////////////////////////////
 
 function sendMessage (msg) {
-  console.log('sendMessage('+msg+')');
+  if(debug===true) console.log('sendMessage('+msg+')');
+  try{
+    console.log('msg: '+JSON.stringify(msg))
+  } catch(e) {
+    console.log(e);
+  }
   try{
     globalConnection.session.publish('com.opentrons.browser_to_robot',[JSON.stringify(msg)]);
   } catch(e){
@@ -377,6 +744,13 @@ function setStatus (string,color) {
   if (string) {
     document.getElementById('status').innerHTML = string;
     document.getElementById('status').style.color = color;
+  }
+}
+
+function setBackendVersion (string, color) {
+  if (string) {
+    document.getElementById('backend_version').innerHTML = string;
+    document.getElementById('backend_version').style.color = color;
   }
 }
 
@@ -457,9 +831,9 @@ function resume () {
   sendMessage(msg);
 }
 
-////////////
-////////////
-////////////
+/////////////////////////////////
+/////////////////////////////////
+/////////////////////////////////
 
 function erase () {
 
@@ -476,9 +850,9 @@ function erase () {
   sendMessage(msg);
 }
 
-////////////
-////////////
-////////////
+/////////////////////////////////
+/////////////////////////////////
+/////////////////////////////////
 
 function setSpeed (axis,value) {
 
@@ -505,10 +879,13 @@ function setSpeed (axis,value) {
 ////////////
 ////////////
 
-function calibrate (axis, property) {
+function calibrate (axis, property, current) {
+
+  var showMe = current.parentNode.children[1];
+  showMe.style.visibility = 'visible';
 
   var msg = {
-    'type' : 'calibrate',
+    'type' : 'calibratePipette',
     'data' : {
       'axis' : axis,
       'property' : property
@@ -526,9 +903,9 @@ function calibrate (axis, property) {
   }
 }
 
-////////////
-////////////
-////////////
+/////////////////////////////////
+/////////////////////////////////
+/////////////////////////////////
 
 function movePipette(axis,property) {
 
@@ -572,9 +949,9 @@ function shakePipette(axis) {
   });
 }
 
-////////////
-////////////
-////////////
+/////////////////////////////////
+/////////////////////////////////
+/////////////////////////////////
 
 var slotPositions = {
   'numbers' : {
@@ -619,15 +996,15 @@ function moveSlot(slotName) {
   }
 }
 
-////////////
-////////////
-////////////
+/////////////////////////////////
+/////////////////////////////////
+/////////////////////////////////
 
 function moveVolume (axis) {
-  var volumeMenu = document.getElementById('volume_'+axis);
+  var volumeMenu = document.getElementById('volume_testing');
   var volume = volumeMenu ? volumeMenu.value : undefined;
 
-  console.log(volume);
+  if(debug===true) console.log('volume '+volume);
 
   if(volume) {
 
@@ -639,7 +1016,7 @@ function moveVolume (axis) {
     if(!isNaN(totalPipetteVolume)) {
       var plungerPercentage = volume / totalPipetteVolume;
 
-      console.log('moving to '+plungerPercentage);
+      if(debug===true) console.log('moving to '+plungerPercentage);
 
       sendMessage({
         'type' : 'movePlunger',
@@ -683,13 +1060,13 @@ function moveVolume (axis) {
 }
 
 
-////////////
-////////////
-////////////
+/////////////////////////////////
+/////////////////////////////////
+/////////////////////////////////
 
 function saveVolume (axis) {
 
-  var volumeMenu = document.getElementById('volume_'+axis);
+  var volumeMenu = document.getElementById('volume_testing');
   var volume = volumeMenu ? volumeMenu.value : undefined;
 
   if(volume) {
@@ -699,14 +1076,14 @@ function saveVolume (axis) {
     var distanceFromBottom = robotState.pipettes[axis].bottom - robotState[axis];
     var percentageFromBottom = distanceFromBottom / totalDistance;
 
-    console.log('saved at '+percentageFromBottom);
+    if(debug===true) console.log('saved at '+percentageFromBottom);
 
     // determine the number of uL this pipette can do based of percentage
     var totalVolume = volume / percentageFromBottom;
 
     if(!isNaN(totalVolume) && totalVolume>0) {
 
-      console.log('pipetteVolume_'+axis);
+      if(debug===true) console.log('pipetteVolume_'+axis);
       document.getElementById('pipetteVolume_'+axis).innerHTML = totalVolume.toFixed(2);
       robotState.pipettes[axis].volume = totalVolume;
 
@@ -724,9 +1101,9 @@ function saveVolume (axis) {
   }
 }
 
-////////////
-////////////
-////////////
+/////////////////////////////////
+/////////////////////////////////
+/////////////////////////////////
 
 function pickupTip(axis) {
   if(CURRENT_PROTOCOL && CURRENT_PROTOCOL.head) {
@@ -755,17 +1132,17 @@ function pickupTip(axis) {
   }
 }
 
-////////////
-////////////
-////////////
+/////////////////////////////////
+/////////////////////////////////
+/////////////////////////////////
 
 function calibrateContainer (axis, containerName) {
   if ('ab'.indexOf(axis)>=0) {
     var msg = {
-      'type' : 'calibrate',
+      'type' : 'calibrateContainer',
       'data' : {
         'axis' : axis,
-        'property' : containerName
+        'name' : containerName
       }
     };
 
@@ -773,9 +1150,10 @@ function calibrateContainer (axis, containerName) {
   }
 }
 
-////////////
-////////////
-////////////
+
+/////////////////////////////////
+/////////////////////////////////
+/////////////////////////////////
 
 function step (axis, multiplyer) {
   var msg = {
@@ -787,12 +1165,19 @@ function step (axis, multiplyer) {
 
   var allAxis = 'xyzab';
 
+  if(debug===true){
+    console.log("multiplyer is: "+multiplyer);
+    console.log("it's a number? "+!isNaN(multiplyer));
+  }
+
   if(axis && !isNaN(multiplyer) && allAxis.indexOf(axis) >= 0) {
     var stepSize;
     if(axis==='a' || axis==='b') stepSize = document.getElementById('stepSize_ab').value;
     else stepSize = document.getElementById('stepSize_xyz').value;
+    if(debug===true) console.log('stepSize is '+stepSize);
     if(!isNaN(stepSize)) {
       stepSize *= multiplyer;
+      if(debug===true) console.log("new stepSize: "+stepSize);
       msg.data[axis] = stepSize;
       sendMessage(msg);
     }
@@ -816,29 +1201,7 @@ function sendDebugCommand () {
   sendMessage(msg);
 }
 
-function updateCommand () {
-  var ssid = document.getElementById('ssidInput').value;
-  var pwd = document.getElementById('pwdInput').value;
 
-  var msg = {
-    'type' : 'update',
-    'data' : {
-      'ssid' : ssid,
-      'password' : pwd
-    }
-  };
-  var popupBlock = document.getElementById('popUpDiv');
-  while(popupBlock.firstChild){
-    popupBlock.removeChild(popupBlock.firstChild);
-  }
-  var updaterLabel = document.createElement('span');
-  popupBlock.appendChild(updaterLabel);
-  updaterLabel.innerHTML = "TRYING TO UPDATE...\r\nthis page will automatically refresh in 60 seconds";
-
-  setTimeout(function(){refresh();},60000);
-
-  sendMessage(msg);
-}
 
 function refresh () {
   window.location.reload();
@@ -854,6 +1217,10 @@ function selectMode() {
   // Interface stuff
 }
 
+/////////////////////////////////
+/////////////////////////////////
+/////////////////////////////////
+
 function setWifiMode() {
   var mode = document.getElementById('wifiSelect').value;
   var ssid = document.getElementById('ssid_input').value;
@@ -867,7 +1234,15 @@ function setWifiMode() {
     }
   };
   sendMessage(msg);
+  document.getElementById('ssid_input').value = '';
+  document.getElementById('passphrase_input').value = '';
+  document.getElementById('wifi_essid_span').innerHTML = '[pending...]'
+  document.getElementById('wifi_ip').innerHTML = '[pending...]';
 }
+
+/////////////////////////////////
+/////////////////////////////////
+/////////////////////////////////
 
 function scanWIFI() {
    var msg = {
@@ -876,6 +1251,10 @@ function scanWIFI() {
    };
    sendMessage(msg);
 }
+
+/////////////////////////////////
+/////////////////////////////////
+/////////////////////////////////
 
 function changeHostname() {
   var hostname = document.getElementById('hostname_input').value;
@@ -888,6 +1267,10 @@ function changeHostname() {
   }
 }
 
+/////////////////////////////////
+/////////////////////////////////
+/////////////////////////////////
+
 function reboot(){
   var msg = {
     'type' : 'reboot'
@@ -895,9 +1278,177 @@ function reboot(){
   sendMessage(msg);
 }
 
+/////////////////////////////////
+/////////////////////////////////
+/////////////////////////////////
+
 function poweroff(){
   var msg = {
     'type' : 'poweroff'
   };
   sendMessage(msg);
+}
+
+/////////////////////////////////
+/////////////////////////////////
+/////////////////////////////////
+
+function restart(){
+  setStatus('restarting...','blue')
+  var msg = {
+    'type' : 'restart'
+  };
+  sendMessage(msg);
+}
+
+/////////////////////////////////
+/////////////////////////////////
+/////////////////////////////////
+
+function update(data){
+  //setStatus('updating '+data+'...','blue');
+  setStatus('updating... please Reboot when done','blue')
+  var msg = {
+    'type' : 'update',
+    'data' : data
+  };
+  sendMessage(msg);
+}
+
+/////////////////////////////////
+/////////////////////////////////
+/////////////////////////////////
+
+function setConnection (string,color) {
+  if (string) {
+    document.getElementById('connection').innerHTML = string;
+    document.getElementById('connection').style.color = color;
+  }
+  setTimeout(checkConnection, 2000);
+}
+
+/////////////////////////////////
+/////////////////////////////////
+/////////////////////////////////
+
+function checkConnection () {
+  if (internetConnection !== 'online'){
+    setConnection('offline', 'red');
+    disableUpdateButtons();
+  } else {
+    if(conn_timer>10){
+      setConnection('offline', 'red');
+      internetConnection = 'offline'
+      disableUpdateButtons();
+    }else{
+      setConnection('online', 'green');
+      enableUpdateButtons();
+    }
+  }
+}
+
+/////////////////////////////////
+/////////////////////////////////
+/////////////////////////////////
+
+function enableUpdateButtons() {
+  /*
+  document.getElementById('updateAllButton').disabled=false
+  document.getElementById('updateFirmwareButton').disabled=false
+  document.getElementById('updateFrontendButton').disabled=false
+  document.getElementById('updateBackendButton').disabled=false
+  document.getElementById('updateScriptsButton').disabled=false
+  */
+  document.getElementById('updateNewButton').disabled=false
+}
+
+function disableUpdateButtons() {
+  /*
+  document.getElementById('updateAllButton').disabled=true
+  document.getElementById('updateFirmwareButton').disabled=true
+  document.getElementById('updateFrontendButton').disabled=true
+  document.getElementById('updateBackendButton').disabled=true
+  document.getElementById('updateScriptsButton').disabled=true
+  */
+  document.getElementById('updateNewButton').disabled=false
+}
+
+function toggleWiFiMenu() {
+  if (document.getElementById('wifi_settings_div').style.display == 'inline-block'){
+    document.getElementById('wifi_settings_div').style.display = 'none';
+    document.getElementById('hostname_div').style.display = 'none';
+  }else{
+    document.getElementById('wifi_settings_div').style.display = 'inline-block';
+    document.getElementById('hostname_div').style.display = 'inline-block';
+  }
+}
+
+/////////////////////////////////
+/////////////////////////////////
+/////////////////////////////////
+
+function updatePiConfigs() {
+  update('piconfigs');
+}
+
+/////////////////////////////////
+/////////////////////////////////
+/////////////////////////////////
+
+function shareInternet(){
+  setStatus('sharing internet...','blue');
+  var msg = {
+    'type' : 'shareinet'
+  };
+  sendMessage(msg);
+}
+
+
+function relativeCoords(){
+  var msg = {
+    'type' : 'relativeCoords'
+  };
+  sendMessage(msg);
+}
+
+
+function listContainers(containersList){
+  containerListMenu = document.getElementById('containerList').children[0];
+  for(var item in containersList){
+    console.log('item = '+item);
+
+    var tempRow = document.createElement('tr');
+    var tempDatum = document.createElement('td');
+    //var PA = document.createElement('td');
+    //var PB = document.createElement('td');
+    var clickEvent = (function(){
+      var option = tempDatum;
+      return function(e) {
+        selectContainerListItem(option);
+      }
+    })();
+
+    tempDatum.addEventListener('click',clickEvent);
+
+    var containerOption = document.createElement('option');
+    tempDatum.value = item;
+    tempDatum.innerHTML = containersList[item];
+
+    
+
+    tempRow.appendChild(tempDatum);
+    //tempRow.appendChild(PB);
+    //tempRow.appendChild(PA);
+    containerListMenu.appendChild(tempRow);
+  }
+}
+
+function selectContainerListItem(someTD){
+  
+  if(currentSelectedContainerItem){
+    currentSelectedContainerItem.classList.remove('tron-grey');
+  }
+  currentSelectedContainerItem = someTD;
+  currentSelectedContainerItem.classList.add('tron-grey');
+  alert('you selected '+someTD.innerHTML);
 }
