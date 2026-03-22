@@ -4,6 +4,9 @@
 
 var globalConnection;
 var robotStatus = false;
+var main_debug = true;
+var verbose = false;
+var str_last = "";
 
 window.addEventListener ('load', function () {
 
@@ -31,35 +34,60 @@ window.addEventListener ('load', function () {
   // When we open the connection, subscribe and register any protocols
   connection.onopen = function(session) {
     setStatus('Browser connected to server','rgb(27,225,100)');
-  
+    checkConnection();
     // Subscribe and register all function end points we offer from the 
     // javascript to the other clients (ie python)
 
     connection.session.subscribe('com.opentrons.robot_ready', function(status){
-      console.log('robotReady called');
-      console.log('robotStatus: '+robotStatus);
-      console.log('status: '+status);
-      if((robotStatus==false) && (status==true)){
-        console.log('going to send calibration request');
+      if(main_debug===true) {
+        console.log('robotReady called');
+        console.log('robotStatus: '+robotStatus);
+        console.log('status: '+status);
+        if((robotStatus==false) && (status==true)){
+          console.log('going to send calibration request');
+       }
       }
       var msg = {
-        'type' : 'calibrate',
-        'data' : ''
+        'type' : 'getContainers'
       };
-      console.log('msg stringified... '+JSON.stringify(msg));
+      if(main_debug===true) console.log('msg stringified... '+JSON.stringify(msg));
+      connection.session.publish('com.opentrons.browser_to_robot', [JSON.stringify(msg)]);
+      var msg = {
+        'type' : 'getCalibrations'
+      };
+      if(main_debug===true) console.log('msg stringified... '+JSON.stringify(msg));
       connection.session.publish('com.opentrons.browser_to_robot', [JSON.stringify(msg)]);
       robotStatus = status;
     });
 
+    if(main_debug===true) console.log('about to publish com.opentrons.browser_ready TRUE');
     connection.session.publish('com.opentrons.browser_ready', [true]);
 
     connection.session.subscribe('com.opentrons.robot_to_browser', function(str) {
       try{
+        if(main_debug===true){
+          if(verbose===true || str[0]!==str_last){
+            console.log('message on com.opentrons.robot_to_browser: '+str[0])
+          }
+        }
+        str_last = str[0];
         var msg = JSON.parse(str);
         if(msg.type && socketHandler[msg.type]) socketHandler[msg.type](msg.data);
         else console.log('error handling message (1): '+str);
+        
       } catch(error) {
         console.log('error handling message (2)');
+        console.log(error);
+      }
+    });
+
+    connection.session.subscribe('com.opentrons.robot_to_browser_ctrl', function(str) {
+      try{
+        var msg = JSON.parse(str);
+        if(msg.type && socketHandler[msg.type]) socketHandler[msg.type](msg.data);
+        else console.log('error handling message (3): '+str);
+      } catch(error) {
+        console.log('error handling message (4)');
         console.log(error);
       }
     });
@@ -72,7 +100,9 @@ window.addEventListener ('load', function () {
 /////////////////////////////////
 
 var theContainerLocations = {};
-var highestSpot = 0;
+var highestSpot = 5;
+var internetConnection = 'offline';
+var conn_timer = 0;
 
 function handleContainers (newContainers) {
 
@@ -93,15 +123,110 @@ function handleContainers (newContainers) {
   // why only a, what about b???
   for(var k = 0; k < kidOptions.length; k++) {
     var oldKidName = kidOptions[k].children[0].innerHTML;
-    if(!theContainerLocations.a[oldKidName]) {
+    if(!(theContainerLocations.a[oldKidName] || theContainerLocations.b[oldKidName])) {
       containerMenu.removeChild(kidOptions[k]);
       k--;
     }
   }
 
   highestSpot = 99999;
+  for(var nameA in theContainerLocations.a) {
 
-  for(var name in theContainerLocations.a) {
+    var foundIt = false;
+    for(var k = 0; k < kidOptions.length; k++) {
+      if(kidOptions[k].children[0].innerHTML===nameA) {
+        foundIt = true;
+        break;
+      }
+    }
+    if(!foundIt){
+      for(var nameB in theContainerLocations.b) {
+        for(var l = 0; l < kidOptions.length; l++) {
+          if(kidOptions[l].children[0].innerHTML===nameB) {
+            foundIt = true;
+            break;
+          }
+        }
+      }
+    }
+    if(!foundIt) {
+      var tempRow = document.createElement('tr');
+      var tempDatum = document.createElement('td');
+      var PA = document.createElement('td');
+      var PB = document.createElement('td');
+
+
+      var clickEvent = (function(){
+        var option = tempDatum;
+        return function(e) {
+          selectContainer(option);
+        }
+      })();
+
+      tempDatum.addEventListener('click',clickEvent);
+
+      var containerOption = document.createElement('option');
+      tempDatum.value = nameA;
+      tempDatum.innerHTML = nameA;
+
+
+      if(theContainerLocations.a[nameA].x!==null && theContainerLocations.a[nameA].y!==null && theContainerLocations.a[nameA].z!==null){
+        
+        PA.innerHTML = "<button type=\"button\" class=\"btn tron-blue\" onclick=\"saveContainer('a');\" disabled>Save</button> \
+        <button type=\"button\" class=\"btn tron-blue\" onclick=\"movetoContainer('a');\" style=\"display:inline-block;\" disabled>Move To</button> \
+        <button type=\"button\" class=\"btn tron-red\" onclick=\"relativeCoords();\" style=\"display:none;\" disabled>Reset</button> \
+        <button type=\"button\" class=\"btn tron-blue\" onclick=\"overrideDepth();\" style=\"display:inline-block;\" disabled>OD</button>";
+      
+      } else {
+        
+        PA.innerHTML = "<button type=\"button\" class=\"btn tron-blue\" onclick=\"saveContainer('a');\" disabled>Save</button> \
+        <button type=\"button\" class=\"btn tron-blue\" onclick=\"movetoContainer('a');\" style=\"display:none;\" disabled>Move To</button> \
+        <button type=\"button\" class=\"btn tron-red\" onclick=\"relativeCoords();\" style=\"display:none;\" disabled>Reset</button> \
+        <button type=\"button\" class=\"btn tron-blue\" onclick=\"overrideDepth();\" style=\"display:none;\" disabled>OD</button>";
+      }
+
+      if (nameA in theContainerLocations.b){
+        if(theContainerLocations.b[nameA].x!==null && theContainerLocations.b[nameA].y!==null && theContainerLocations.b[nameA].z!==null){
+
+          PB.innerHTML = "<button type=\"button\" class=\"btn tron-black\" onclick=\"saveContainer('b');\" disabled>Save</button> \
+          <button type=\"button\" class=\"btn tron-black\" onclick=\"movetoContainer('b');\" style=\"display:inline-block;\" disabled>Move To</button> \
+          <button type=\"button\" class=\"btn tron-red\" onclick=\"relativeCoords();\" style=\"display:none;\" disabled>Reset</button> \
+          <button type=\"button\" class=\"btn tron-black\" onclick=\"overrideDepth();\" style=\"display:inline-block;\" disabled>OD</button>";
+
+        } else {
+          
+          PB.innerHTML = "<button type=\"button\" class=\"btn tron-black\" onclick=\"saveContainer('b');\" disabled>Save</button> \
+          <button type=\"button\" class=\"btn tron-black\" onclick=\"movetoContainer('b');\" style=\"display:none;\" disabled>Move To</button> \
+          <button type=\"button\" class=\"btn tron-red\" onclick=\"relativeCoords();\" style=\"display:none;\" disabled>Reset</button> \
+          <button type=\"button\" class=\"btn tron-black\" onclick=\"overrideDepth();\" style=\"display:none;\" disabled>OD</button>";
+
+        }
+      }
+
+
+
+      
+      
+
+      tempRow.appendChild(tempDatum);
+      //switched append order to reflect center-left 
+      tempRow.appendChild(PB);
+      tempRow.appendChild(PA);
+
+      containerMenu.appendChild(tempRow);
+    }
+
+    console.log('theContainerLocations.a['+nameA+'].z: '+theContainerLocations.a[nameA].z)
+    if(theContainerLocations.a[nameA].z != null){
+     if(theContainerLocations.a[nameA].z < highestSpot) highestSpot = theContainerLocations.a[nameA].z;
+    }
+    console.log('theContainerLocations.b['+nameA+'].z: '+theContainerLocations.b[nameA].z)
+    if(theContainerLocations.b[nameA].z != null){
+      if(theContainerLocations.b[nameA].z < highestSpot) highestSpot = theContainerLocations.b[nameA].z;
+    }
+  }
+  for(var name in theContainerLocations.b) {
+
     var foundIt = false;
     for(var k = 0; k < kidOptions.length; k++) {
       if(kidOptions[k].children[0].innerHTML===name) {
@@ -112,6 +237,15 @@ function handleContainers (newContainers) {
     if(!foundIt) {
       var tempRow = document.createElement('tr');
       var tempDatum = document.createElement('td');
+      var PA = document.createElement('td');
+      var PB = document.createElement('td');
+
+      tempDatum.classList.add("col-md-4");
+      PA.classList.add("col-md-4");
+      PB.classList.add("col-md-4");
+      tempDatum.classList.add("col-sm-4");
+      PA.classList.add("col-sm-4");
+      PB.classList.add("col-sm-4");
 
       var clickEvent = (function(){
         var option = tempDatum;
@@ -125,33 +259,158 @@ function handleContainers (newContainers) {
       var containerOption = document.createElement('option');
       tempDatum.value = name;
       tempDatum.innerHTML = name;
+
+      if(theContainerLocations.b[name].x!==null && theContainerLocations.b[name].y!==null && theContainerLocations.b[name].z!==null){
+
+        PB.innerHTML = "<button type=\"button\" class=\"btn tron-black\" onclick=\"saveContainer('b');\" disabled>Save</button> \
+        <button type=\"button\" class=\"btn tron-black\" onclick=\"movetoContainer('b');\" style=\"display:inline-block;\" disabled>Move To</button> \
+        <button type=\"button\" class=\"btn tron-red\" onclick=\"relativeCoords();\" style=\"display:none;\" disabled>Reset</button> \
+        <button type=\"button\" class=\"btn tron-black\" onclick=\"overrideDepth();\" style=\"display:inline-block;\" disabled>OD</button>";
+
+      } else {
+        
+        PB.innerHTML = "<button type=\"button\" class=\"btn tron-black\" onclick=\"saveContainer('b');\" disabled>Save</button> \
+        <button type=\"button\" class=\"btn tron-black\" onclick=\"movetoContainer('b');\" style=\"display:none;\" disabled>Move To</button> \
+        <button type=\"button\" class=\"btn tron-red\" onclick=\"relativeCoords();\" style=\"display:none;\" disabled>Reset</button> \
+        <button type=\"button\" class=\"btn tron-black\" onclick=\"overrideDepth();\" style=\"display:none;\" disabled>OD</button>";
+
+      }
+
+      if (name in theContainerLocations.a){
+        if(theContainerLocations.a[name].x!==null && theContainerLocations.a[name].y!==null && theContainerLocations.a[name].z!==null){
+         
+          PA.innerHTML = "<button type=\"button\" class=\"btn tron-blue\" onclick=\"saveContainer('a');\" disabled>Save</button> \
+          <button type=\"button\" class=\"btn tron-blue\" onclick=\"movetoContainer('a');\" style=\"display:inline-block;\" disabled>Move To</button> \
+          <button type=\"button\" class=\"btn tron-red\" onclick=\"relativeCoords();\" style=\"display:none;\" disabled>Reset</button> \
+          <button type=\"button\" class=\"btn tron-blue\" onclick=\"overrideDepth();\" style=\"display:inline-block;\" disabled>OD</button>";
+        
+        } else {
+          
+          PA.innerHTML = "<button type=\"button\" class=\"btn tron-blue\" onclick=\"saveContainer('a');\" disabled>Save</button> \
+          <button type=\"button\" class=\"btn tron-blue\" onclick=\"movetoContainer('a');\" style=\"display:none;\" disabled>Move To</button> \
+          <button type=\"button\" class=\"btn tron-red\" onclick=\"relativeCoords();\" style=\"display:none;\" disabled>Reset</button> \
+          <button type=\"button\" class=\"btn tron-blue\" onclick=\"overrideDepth();\" style=\"display:none;\" disabled>OD</button>";
+        
+        }
+      }
+
       tempRow.appendChild(tempDatum);
+      //switched append order to reflect center-left 
+      tempRow.appendChild(PB);
+      tempRow.appendChild(PA);
       containerMenu.appendChild(tempRow);
     }
 
-    if(theContainerLocations.a[name].z < highestSpot) highestSpot = theContainerLocations.a[name].z;
+    console.log('theContainerLocations.b['+name+'].z: '+theContainerLocations.b[name].z)
+    if(theContainerLocations.b[name].z != null){
+      if(theContainerLocations.b[name].z < highestSpot){
+        highestSpot = theContainerLocations.b[name].z;
+        if(main_debug===true){
+          console.log('highestSpot('+name+'-b.2):'+highestSpot);
+          console.log('theContainerLocations.b['+name+'] = '+theContainerLocations.b[name].z);
+        }
+      }
+    }
+
+    console.log('theContainerLocations.b['+name+'].z: '+theContainerLocations.b[name].z)
+    if(theContainerLocations.b[name].z != null){
+      if(theContainerLocations.b[name].z < highestSpot) highestSpot = theContainerLocations.b[name].z;
+    }
   }
 
+
+  if(main_debug===true) console.log('highestSpot(1):'+highestSpot)
   if(highestSpot>200) {
-    highestSpot = 0;
+    highestSpot = 5;
+  }
+  if(main_debug===true) console.log('highestSpot(2):'+highestSpot)
+  if(highestSpot<5) {
+    highestSpot = 5;
+  }
+  // call function that cuts out the 'save' buttons for unused containers (defined in loadFiles.js)
+  if(CURRENT_PROTOCOL && CURRENT_PROTOCOL.head) {
+    setPipetteContainers(CURRENT_PROTOCOL, PIPETTES); // uses global variables CURRENT_PROTOCOL, PIPETTES
   }
 }
 
-////////////
-////////////
-////////////
+//////////////////////////////
+//////////////////////////////
+//////////////////////////////
 
 var currentSelectedContainer = undefined;
+var firstTD = undefined;
+var secondTD = undefined;
 
 function selectContainer(currentDiv) {
 
   if(currentSelectedContainer) {
     currentSelectedContainer.classList.remove('tron-grey');
+    firstTD = currentSelectedContainer.nextSibling;
+    secondTD = firstTD.nextSibling;
+    
+    if (main_debug===true) console.log(firstTD);
+    var moveBtnB = firstTD.lastChild.previousElementSibling.previousElementSibling;
+    var saveBtnB = firstTD.firstChild;
+    if (main_debug===true) console.log(secondTD);
+    var moveBtnA = secondTD.lastChild.previousElementSibling.previousElementSibling;
+    var saveBtnA = secondTD.firstChild;
+
+    moveBtnA.disabled = true;
+    moveBtnB.disabled = true;
+    saveBtnA.disabled = true;
+    saveBtnB.disabled = true;
+
+    var resetBtnB = firstTD.lastChild.previousElementSibling;
+    var resetBtnA = secondTD.lastChild.previousElementSibling;
+
+    resetBtnB.disabled = true;
+    resetBtnA.disabled = true;
+
+    var odBtnB = firstTD.lastChild;
+    var odBtnA = secondTD.lastChild;
+
+    odBtnB.disabled = true;
+    odBtnA.disabled = true;
   }
 
   if(currentDiv) {
     currentSelectedContainer = currentDiv;
     currentSelectedContainer.classList.add('tron-grey');
+    firstTD = currentSelectedContainer.nextSibling;
+    secondTD = firstTD.nextSibling;
+    
+    var moveBtnB = firstTD.lastChild.previousElementSibling.previousElementSibling;
+    var saveBtnB = firstTD.firstChild;
+
+    var moveBtnA = secondTD.lastChild.previousElementSibling.previousElementSibling;
+    var saveBtnA = secondTD.firstChild;
+
+
+    moveBtnA.disabled = false;
+    moveBtnB.disabled = false;
+    saveBtnA.disabled = false;
+    saveBtnB.disabled = false;
+
+
+    if (main_debug===true) {console.log('currentDiv: ',currentDiv);
+      console.log("TIPRACK_ORIGIN['a']: ",TIPRACK_ORIGIN['a']);
+      console.log("TIPRACK_ORIGIN['b']: ",TIPRACK_ORIGIN['b']);
+    }
+    if(currentDiv.value === TIPRACK_ORIGIN['a']){
+      var resetBtnA = secondTD.lastChild.previousElementSibling;
+      resetBtnA.disabled = false;
+    }
+    if(currentDiv.value === TIPRACK_ORIGIN['b']){
+      var resetBtnB = firstTD.lastChild.previousElementSibling;
+      resetBtnB.disabled = false;
+    }
+    
+    var odBtnB = firstTD.lastChild;
+    var odBtnA = secondTD.lastChild;
+
+    odBtnB.disabled = false;
+    odBtnA.disabled = false;
+    
 
     var axis = ['a','b'];
     var coords = ['x','y','z'];
@@ -160,8 +419,12 @@ function selectContainer(currentDiv) {
       for(var n=0;n<coords.length;n++) {
         var val = theContainerLocations[axis[i]][currentSelectedContainer.value][coords[n]];
 
+
         if(val!=null) val = val.toFixed(1);
         else val = 'none';
+
+
+
         document.getElementById('containerpos_'+coords[n]+'_'+axis[i]).innerHTML = val;
       }
     }
@@ -171,31 +434,72 @@ function selectContainer(currentDiv) {
   }
 }
 
-////////////
-////////////
-////////////
+/////////////////////////////////
+/////////////////////////////////
+/////////////////////////////////
 
 function saveContainer (axis) {
 
   var contName = currentSelectedContainer.value;
 
-  calibrateContainer(axis, contName);
+  firstTD = currentSelectedContainer.nextSibling;
+  secondTD = firstTD.nextSibling;
+  
+  if(axis == 'a'){
+    
+    var moveBtn = secondTD.lastChild.previousElementSibling.previousElementSibling;
+    moveBtn.style.display = 'inline-block';
+    if(contName === TIPRACK_ORIGIN['a']){
+      var resetBtn = secondTD.lastChild.previousElementSibling;
+      resetBtn.style.display = 'inline-block';
+    }
+
+    var odBtn = secondTD.lastChild;
+    odBtn.style.display = 'inline-block';
+  
+  } else {
+
+    var moveBtn = firstTD.lastChild.previousElementSibling.previousElementSibling;
+    moveBtn.style.display = 'inline-block';
+    if(contName === TIPRACK_ORIGIN['b']){
+      var resetBtn = firstTD.lastChild.previousElementSibling;
+      resetBtn.style.display = 'inline-block';
+    }
+
+    var odBtn = firstTD.lastChild;
+    odBtn.style.display = 'inline-block';
+  }
+
+  
+  var depth = 0
+
+  if(labware_from_db && labware_from_db[contName]) {
+    if ('depth' in labware_from_db[contName]) {
+      depth = labware_from_db[contName]['depth']
+    }
+  }
+
+  
+  
+
+  calibrateContainer(axis, contName, depth);
 
   setTimeout(function(){
     selectContainer(currentSelectedContainer);
-  },500);
+  },300);
 }
 
-////////////
-////////////
-////////////
+/////////////////////////////////
+/////////////////////////////////
+/////////////////////////////////
 
 function movetoContainer (axis) {
+
   var contName = currentSelectedContainer.value;
   
   var thisLoc = theContainerLocations[axis][contName];
   
-  if(thisLoc.x && thisLoc.y && thisLoc.z) {
+  if(!isNaN(thisLoc.x) && !isNaN(thisLoc.y) && !isNaN(thisLoc.z)) {
 
     var moveArray = [];
 
@@ -227,6 +531,38 @@ var lineCount = 0;
 var lineLimit = 500; // If this number is too big bad things happen
 
 var socketHandler = {
+  'position' : (function(){
+    return function (data) {
+      if (main_debug===true) console.log(data);
+      msg = data.string;
+      try {
+        var coordMessage = msg;
+        if(!isNaN(coordMessage.x)) {
+          document.getElementById('position_x').innerHTML = coordMessage.x.toFixed(1);
+          robotState.x = coordMessage.x;
+        }
+        if(!isNaN(coordMessage.y)) {
+          document.getElementById('position_y').innerHTML = coordMessage.y.toFixed(1);
+          robotState.y = coordMessage.y;
+        }
+        if(!isNaN(coordMessage.z)) {
+          document.getElementById('position_z').innerHTML = coordMessage.z.toFixed(1);
+          robotState.z = coordMessage.z;
+        }
+        if(!isNaN(coordMessage.a)) {
+          document.getElementById('position_a').innerHTML = coordMessage.a.toFixed(1);
+          robotState.a = coordMessage.a;
+        }
+        if(!isNaN(coordMessage.b)) {
+          document.getElementById('position_b').innerHTML = coordMessage.b.toFixed(1);
+          robotState.b = coordMessage.b;
+        }
+      }
+      catch(e) {
+        console.log(e);
+      }
+    }
+  })(),
   'smoothie' : (function(){
 
     var previousMessage = undefined;
@@ -235,9 +571,10 @@ var socketHandler = {
 
       if(data.string!==previousMessage) {
 
-        if(data.string.indexOf('{')>=0){
+        /*if(data.string.indexOf('{')>=0){
+          msg = data.string.slice(data.string.indexOf('{'));
           try {
-            var coordMessage = JSON.parse(data.string);
+            var coordMessage = JSON.parse(msg);
             if(!isNaN(coordMessage.x)) {
               document.getElementById('position_x').innerHTML = coordMessage.x.toFixed(1);
               robotState.x = coordMessage.x;
@@ -262,7 +599,7 @@ var socketHandler = {
           catch(e) {
             console.log(e);
           }
-        }
+        }*/
 
         previousMessage = data.string;
 
@@ -293,7 +630,8 @@ var socketHandler = {
   })(),
 
   'coordinates' : function (data) {
-    console.log(data);
+    if(main_debug===true) console.log(data);
+    //just for debugging?
   },
   'status' : function (data) {
     setStatus(data.string,data.color);
@@ -308,8 +646,22 @@ var socketHandler = {
 
       try{
         document.getElementById('pipetteVolume_'+axis).innerHTML = robotState.pipettes[axis].volume.toFixed(2);
+        document.getElementById('btn_top_'+axis).style.visibility = "visible"
+        document.getElementById('btn_blowout_'+axis).style.visibility = "visible"
+        document.getElementById('btn_droptip_'+axis).style.visibility = "visible"
       }
       catch(e){}
+    }
+  },
+  'containers' : function (data) {
+    var blob = data;//JSON.parse(data);
+    var newContainers = blob.containers;
+    if (main_debug===true) {
+      console.log('newContainers...');
+      console.log(newContainers);
+    }
+    if (newContainers) {
+      saveContainers(newContainers);
     }
   },
   'containerLocations' : function (data) {
@@ -348,6 +700,50 @@ var socketHandler = {
     } else {
       document.getElementById('wifi_essid_span').innerHTML = data;
     }
+  },
+  'internet' : function(data) {
+    conn_timer = 0;
+    internetConnection=data;
+  },
+  'per_data' : function(data) {
+    internetConnection=data.internet
+    if(data.wifi_essid==""){
+      document.getElementById('wifi_essid_span').innerHTML = '[none]';
+    }else{
+      document.getElementById('wifi_essid_span').innerHTML = data.wifi_essid;
+    }
+    if(data.wifi_ip==""){
+      document.getElementById('wifi_ip').innerHTML = '[none]';
+    }else{
+      document.getElementById('wifi_ip').innerHTML = data.wifi_ip;
+    }
+    if(data.eth_ip==""){
+      document.getElementById('eth_ip').innerHTML = '[none]';
+    }else{
+      document.getElementById('eth_ip').innerHTML = data.eth_ip;
+    }
+  },
+  'limit' : function(data) {
+    if(main_debug===true) console.log('limit... '+data.slice(0,4));
+    setStatus('Minimum limit switch hit for '+data.slice(-1).toUpperCase()+' axis! Please home the machine.','red');
+    var dt1 = new Date();
+    var utcDate = dt1.toUTCString();
+    if(data.slice(0,4)=="min_"){
+      var ax = data;
+      alert('Minimum limit switch hit for '+data.slice(-1).toUpperCase()+' axis!\n\nPlease home the machine.\n\n\n\n'+utcDate);
+    }
+  },
+  'progress' : function(data) {
+    //not currently being used
+    if(main_debug===true) console.log('making progress... '+data);
+  },
+  'success' : function(data) {
+    setStatus(data,'green');
+    alert(data);
+  },
+  'failure' : function(data) {
+    setStatus(data,'red');
+    alert(data);
   }
 };
 
@@ -358,7 +754,12 @@ var timeSentJob = undefined;
 /////////////////////////////////
 
 function sendMessage (msg) {
-  console.log('sendMessage('+msg+')');
+  if(main_debug===true) console.log('sendMessage('+msg+')');
+  try{
+    if(main_debug===true) console.log('msg: '+JSON.stringify(msg))
+  } catch(e) {
+
+  }
   try{
     globalConnection.session.publish('com.opentrons.browser_to_robot',[JSON.stringify(msg)]);
   } catch(e){
@@ -457,9 +858,9 @@ function resume () {
   sendMessage(msg);
 }
 
-////////////
-////////////
-////////////
+/////////////////////////////////
+/////////////////////////////////
+/////////////////////////////////
 
 function erase () {
 
@@ -476,9 +877,9 @@ function erase () {
   sendMessage(msg);
 }
 
-////////////
-////////////
-////////////
+/////////////////////////////////
+/////////////////////////////////
+/////////////////////////////////
 
 function setSpeed (axis,value) {
 
@@ -505,10 +906,13 @@ function setSpeed (axis,value) {
 ////////////
 ////////////
 
-function calibrate (axis, property) {
+function calibrate (axis, property, current) {
+
+  var showMe = current.parentNode.children[1];
+  showMe.style.visibility = 'visible';
 
   var msg = {
-    'type' : 'calibrate',
+    'type' : 'calibratePipette',
     'data' : {
       'axis' : axis,
       'property' : property
@@ -526,9 +930,9 @@ function calibrate (axis, property) {
   }
 }
 
-////////////
-////////////
-////////////
+/////////////////////////////////
+/////////////////////////////////
+/////////////////////////////////
 
 function movePipette(axis,property) {
 
@@ -572,9 +976,9 @@ function shakePipette(axis) {
   });
 }
 
-////////////
-////////////
-////////////
+/////////////////////////////////
+/////////////////////////////////
+/////////////////////////////////
 
 var slotPositions = {
   'numbers' : {
@@ -619,15 +1023,15 @@ function moveSlot(slotName) {
   }
 }
 
-////////////
-////////////
-////////////
+/////////////////////////////////
+/////////////////////////////////
+/////////////////////////////////
 
 function moveVolume (axis) {
-  var volumeMenu = document.getElementById('volume_'+axis);
+  var volumeMenu = document.getElementById('volume_testing');
   var volume = volumeMenu ? volumeMenu.value : undefined;
 
-  console.log(volume);
+  if(main_debug===true) console.log('volume '+volume);
 
   if(volume) {
 
@@ -639,7 +1043,7 @@ function moveVolume (axis) {
     if(!isNaN(totalPipetteVolume)) {
       var plungerPercentage = volume / totalPipetteVolume;
 
-      console.log('moving to '+plungerPercentage);
+      if(main_debug===true) console.log('moving to '+plungerPercentage);
 
       sendMessage({
         'type' : 'movePlunger',
@@ -683,13 +1087,13 @@ function moveVolume (axis) {
 }
 
 
-////////////
-////////////
-////////////
+/////////////////////////////////
+/////////////////////////////////
+/////////////////////////////////
 
 function saveVolume (axis) {
 
-  var volumeMenu = document.getElementById('volume_'+axis);
+  var volumeMenu = document.getElementById('volume_testing');
   var volume = volumeMenu ? volumeMenu.value : undefined;
 
   if(volume) {
@@ -699,14 +1103,14 @@ function saveVolume (axis) {
     var distanceFromBottom = robotState.pipettes[axis].bottom - robotState[axis];
     var percentageFromBottom = distanceFromBottom / totalDistance;
 
-    console.log('saved at '+percentageFromBottom);
+    if(main_debug===true) console.log('saved at '+percentageFromBottom);
 
     // determine the number of uL this pipette can do based of percentage
     var totalVolume = volume / percentageFromBottom;
 
     if(!isNaN(totalVolume) && totalVolume>0) {
 
-      console.log('pipetteVolume_'+axis);
+      if(main_debug===true) console.log('pipetteVolume_'+axis);
       document.getElementById('pipetteVolume_'+axis).innerHTML = totalVolume.toFixed(2);
       robotState.pipettes[axis].volume = totalVolume;
 
@@ -724,9 +1128,9 @@ function saveVolume (axis) {
   }
 }
 
-////////////
-////////////
-////////////
+/////////////////////////////////
+/////////////////////////////////
+/////////////////////////////////
 
 function pickupTip(axis) {
   if(CURRENT_PROTOCOL && CURRENT_PROTOCOL.head) {
@@ -755,17 +1159,18 @@ function pickupTip(axis) {
   }
 }
 
-////////////
-////////////
-////////////
+/////////////////////////////////
+/////////////////////////////////
+/////////////////////////////////
 
-function calibrateContainer (axis, containerName) {
+function calibrateContainer (axis, containerName, depth) {
   if ('ab'.indexOf(axis)>=0) {
     var msg = {
-      'type' : 'calibrate',
+      'type' : 'calibrateContainer',
       'data' : {
         'axis' : axis,
-        'property' : containerName
+        'name' : containerName,
+        'depth' : depth
       }
     };
 
@@ -773,9 +1178,28 @@ function calibrateContainer (axis, containerName) {
   }
 }
 
-////////////
-////////////
-////////////
+
+function overrideDepth () {
+  var contName = currentSelectedContainer.value;
+
+  var thisLoc = theContainerLocations[axis][contName];
+
+  new_depth = robotState.z - thisLoc.z
+
+  var msg = {
+    'type' : 'containerDepthOverride',
+    'data' : {
+      'name' : contName,
+      'depth' : new_depth
+    }
+  };
+
+  sendMessage(msg);
+}
+
+/////////////////////////////////
+/////////////////////////////////
+/////////////////////////////////
 
 function step (axis, multiplyer) {
   var msg = {
@@ -787,12 +1211,19 @@ function step (axis, multiplyer) {
 
   var allAxis = 'xyzab';
 
+  if(main_debug===true){
+    console.log("multiplyer is: "+multiplyer);
+    console.log("it's a number? "+!isNaN(multiplyer));
+  }
+
   if(axis && !isNaN(multiplyer) && allAxis.indexOf(axis) >= 0) {
     var stepSize;
     if(axis==='a' || axis==='b') stepSize = document.getElementById('stepSize_ab').value;
     else stepSize = document.getElementById('stepSize_xyz').value;
+    if(main_debug===true) console.log('stepSize is '+stepSize);
     if(!isNaN(stepSize)) {
       stepSize *= multiplyer;
+      if(main_debug===true) console.log("new stepSize: "+stepSize);
       msg.data[axis] = stepSize;
       sendMessage(msg);
     }
@@ -803,7 +1234,7 @@ function step (axis, multiplyer) {
 /////////////////////////////////
 /////////////////////////////////
 
-function sendDebugCommand () {
+function senddebugCommand () {
   var text = document.getElementById('debugCommandInput').value;
 
   var msg = {
@@ -816,29 +1247,7 @@ function sendDebugCommand () {
   sendMessage(msg);
 }
 
-function updateCommand () {
-  var ssid = document.getElementById('ssidInput').value;
-  var pwd = document.getElementById('pwdInput').value;
 
-  var msg = {
-    'type' : 'update',
-    'data' : {
-      'ssid' : ssid,
-      'password' : pwd
-    }
-  };
-  var popupBlock = document.getElementById('popUpDiv');
-  while(popupBlock.firstChild){
-    popupBlock.removeChild(popupBlock.firstChild);
-  }
-  var updaterLabel = document.createElement('span');
-  popupBlock.appendChild(updaterLabel);
-  updaterLabel.innerHTML = "TRYING TO UPDATE...\r\nthis page will automatically refresh in 60 seconds";
-
-  setTimeout(function(){refresh();},60000);
-
-  sendMessage(msg);
-}
 
 function refresh () {
   window.location.reload();
@@ -854,6 +1263,10 @@ function selectMode() {
   // Interface stuff
 }
 
+/////////////////////////////////
+/////////////////////////////////
+/////////////////////////////////
+
 function setWifiMode() {
   var mode = document.getElementById('wifiSelect').value;
   var ssid = document.getElementById('ssid_input').value;
@@ -867,7 +1280,15 @@ function setWifiMode() {
     }
   };
   sendMessage(msg);
+  document.getElementById('ssid_input').value = '';
+  document.getElementById('passphrase_input').value = '';
+  document.getElementById('wifi_essid_span').innerHTML = '[pending...]'
+  document.getElementById('wifi_ip').innerHTML = '[pending...]';
 }
+
+/////////////////////////////////
+/////////////////////////////////
+/////////////////////////////////
 
 function scanWIFI() {
    var msg = {
@@ -876,6 +1297,10 @@ function scanWIFI() {
    };
    sendMessage(msg);
 }
+
+/////////////////////////////////
+/////////////////////////////////
+/////////////////////////////////
 
 function changeHostname() {
   var hostname = document.getElementById('hostname_input').value;
@@ -888,6 +1313,10 @@ function changeHostname() {
   }
 }
 
+/////////////////////////////////
+/////////////////////////////////
+/////////////////////////////////
+
 function reboot(){
   var msg = {
     'type' : 'reboot'
@@ -895,9 +1324,251 @@ function reboot(){
   sendMessage(msg);
 }
 
+/////////////////////////////////
+/////////////////////////////////
+/////////////////////////////////
+
 function poweroff(){
   var msg = {
     'type' : 'poweroff'
   };
   sendMessage(msg);
 }
+
+/////////////////////////////////
+/////////////////////////////////
+/////////////////////////////////
+
+function restart(){
+  setStatus('restarting...','blue')
+  var msg = {
+    'type' : 'restart'
+  };
+  sendMessage(msg);
+}
+
+/////////////////////////////////
+/////////////////////////////////
+/////////////////////////////////
+
+function update(data){
+  setStatus('updating '+data+'...','blue');
+  var msg = {
+    'type' : 'update',
+    'data' : data
+  };
+  sendMessage(msg);
+}
+
+/////////////////////////////////
+/////////////////////////////////
+/////////////////////////////////
+
+function setConnection (string,color) {
+  if (string) {
+    document.getElementById('connection').innerHTML = string;
+    document.getElementById('connection').style.color = color;
+  }
+  setTimeout(checkConnection, 2000);
+}
+
+/////////////////////////////////
+/////////////////////////////////
+/////////////////////////////////
+
+function checkConnection () {
+  if (internetConnection !== 'online'){
+    setConnection('offline', 'red');
+    disableUpdateButtons();
+  } else {
+    if(conn_timer>10){
+      setConnection('offline', 'red');
+      internetConnection = 'offline'
+      disableUpdateButtons();
+    }else{
+      setConnection('online', 'green');
+      enableUpdateButtons();
+    }
+  }
+}
+
+/////////////////////////////////
+/////////////////////////////////
+/////////////////////////////////
+
+function enableUpdateButtons() {
+  document.getElementById('updateAllButton').disabled=false
+  document.getElementById('updateFirmwareButton').disabled=false
+  document.getElementById('updateFrontendButton').disabled=false
+  document.getElementById('updateBackendButton').disabled=false
+  document.getElementById('updateScriptsButton').disabled=false
+}
+
+function disableUpdateButtons() {
+  document.getElementById('updateAllButton').disabled=true
+  document.getElementById('updateFirmwareButton').disabled=true
+  document.getElementById('updateFrontendButton').disabled=true
+  document.getElementById('updateBackendButton').disabled=true
+  document.getElementById('updateScriptsButton').disabled=true
+}
+
+function toggleWiFiMenu() {
+  if (document.getElementById('wifi_settings_div').style.display == 'inline-block'){
+    document.getElementById('wifi_settings_div').style.display = 'none';
+    document.getElementById('hostname_div').style.display = 'none';
+  }else{
+    document.getElementById('wifi_settings_div').style.display = 'inline-block';
+    document.getElementById('hostname_div').style.display = 'inline-block';
+  }
+}
+
+/////////////////////////////////
+/////////////////////////////////
+/////////////////////////////////
+
+function updatePiConfigs() {
+  update('piconfigs');
+}
+
+/////////////////////////////////
+/////////////////////////////////
+/////////////////////////////////
+
+function shareInternet(){
+  setStatus('sharing internet...','blue');
+  var msg = {
+    'type' : 'shareinet'
+  };
+  sendMessage(msg);
+}
+
+
+function relativeCoords(){
+  var msg = {
+    'type' : 'relativeCoords'
+  };
+  sendMessage(msg);
+
+}
+
+
+/////////////////////////////////
+/////////////////////////////////
+/////////////////////////////////
+
+
+function loadLibrary(input){
+  var file = input;
+  if(file.files.length)
+  {
+    var reader = new FileReader();
+    reader.onload = function(e)
+    {
+      try{
+        var blob = JSON.parse(e.target.result);
+        var msg = {
+          'type':'saveContainersLibrary',
+          'data': blob
+        }
+        sendMessage(msg);
+      } catch(err){
+        alert('Error: \r\n'+err.message);
+      }
+      
+    };
+    
+    reader.readAsBinaryString(file.files[0]);
+
+  }
+  input.getParentElement().reset();
+}
+
+
+function loadPositions(input){
+  var file = input;
+  if(file.files.length)
+  {
+    var reader = new FileReader();
+    reader.onload = function(e)
+    {
+      try{
+        var blob = JSON.parse(e.target.result);
+        var msg = {
+          'type':'saveContainerPositions',
+          'data': blob
+        }
+        sendMessage(msg);
+      } catch(err){
+        alert('Error: \r\n'+err.message);
+      }
+      
+    };
+    
+    reader.readAsBinaryString(file.files[0]);
+
+  }
+  input.getParentElement().reset();
+}
+
+function saveLibrary(){
+  if(Object.keys(labware_from_db).length>0){
+    var d = new Date();
+    var dateString = '';
+
+    dateString += d.getDate();
+    dateString += '-';
+    dateString += d.getMonth();
+    dateString += '-';
+    dateString += d.getFullYear();
+    dateString += '-';
+    dateString += d.getHours();
+    dateString += ':';
+    dateString += d.getMinutes();
+    dateString += ':';
+    dateString += d.getSeconds();
+
+    var savefilename = 'containers' + '_' + dateString + '.json';
+
+    var blob = new Blob( [ JSON.stringify(labware_from_db, undefined, 2) ], {type: "text/json;charset=utf-8"} );
+
+    var shouldSave = confirm('Save container library to disk?');
+
+    if(shouldSave) saveAs(blob, savefilename);
+
+  }else{
+    alert('Problem saving containers library');
+  }
+}
+
+
+function savePositions(){
+  if(Object.keys(theContainerLocations).length>0){
+    var d = new Date();
+    var dateString = '';
+
+    dateString += d.getDate();
+    dateString += '-';
+    dateString += d.getMonth();
+    dateString += '-';
+    dateString += d.getFullYear();
+    dateString += '-';
+    dateString += d.getHours();
+    dateString += ':';
+    dateString += d.getMinutes();
+    dateString += ':';
+    dateString += d.getSeconds();
+
+    var savefilename = 'positions' + '_' + dateString + '.json';
+
+    var blob = new Blob( [ JSON.stringify(theContainerLocations, undefined, 2) ], {type: "text/json;charset=utf-8"} );
+
+    var shouldSave = confirm('Save container locations to disk?');
+
+    if(shouldSave) saveAs(blob, savefilename);
+
+  } else {
+    alert('Problem saving container positions');
+  }
+
+}
+
